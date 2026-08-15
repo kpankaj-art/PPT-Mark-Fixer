@@ -1,8 +1,8 @@
-import os
 import io
 import gc
 import streamlit as st
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from PIL import Image, ImageDraw, ImageFilter
 
 def process_image(image_bytes, mode_choice):
@@ -43,8 +43,10 @@ if uploaded_file is not None:
 
         for idx, slide in enumerate(prs.slides, start=1):
             status_text.text(f"Processing Slide {idx}/{total_slides}...")
+            
             for shape in slide.shapes:
-                if shape.has_image:
+                # Safe check: Sirf unhi shapes ko check karein jo picture type ke hain
+                if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
                     try:
                         image_bytes = shape.image.blob
                         fixed_bytes = process_image(image_bytes, option[0])
