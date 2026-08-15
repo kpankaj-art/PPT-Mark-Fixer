@@ -1,4 +1,5 @@
 streamlit
 python-pptx
-scikit-image
+opencv-python-headless
+numpy
 Pillow
