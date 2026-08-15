@@ -1,113 +1,69 @@
 import os
 import io
 import gc
-import cv2
-import numpy as np
+import streamlit as st
 from pptx import Presentation
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFilter
 
 def process_image(image_bytes, mode_choice):
-    """
-    OpenCV ka use karke images ko process karta hai:
-    Mode 1: Hand-drawn boxes ko remove/clean karta hai.
-    Mode 2: Imperfect shapes ko detect karke perfect Red Square/Rectangle banata hai.
-    """
-    # Bytes ko OpenCV image me convert karna
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if img is None:
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except Exception:
         return image_bytes
 
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    
-    # Hand-drawn lines detect karne ke liye color/contour range
-    # (Yeh rough drawings/lines detect karta hai)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    clean_img = img.copy()
-    
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
-        if area > 1000: # Chote-mote noise ko ignore karne ke liye
-            x, y, w, h = cv2.boundingRect(cnt)
-            
-            if mode_choice == '1':
-                # OPTION 1: Clean Image (Dabba hatana aur background fill karna)
-                mask = np.zeros(img.shape[:2], np.uint8)
-                cv2.drawContours(mask, [cnt], -1, 255, 5)
-                clean_img = cv2.inpaint(clean_img, mask, 3, cv2.INPAINT_TELEA)
-                
-            elif mode_choice == '2':
-                # OPTION 2: Perfect Square/Rectangle Box banana
-                # Purani lines ko inpaint karke clean karna
-                mask = np.zeros(img.shape[:2], np.uint8)
-                cv2.drawContours(mask, [cnt], -1, 255, 5)
-                clean_img = cv2.inpaint(clean_img, mask, 3, cv2.INPAINT_TELEA)
-                # Perfect Rectangle Draw karna (Red Color, Thickness 3)
-                cv2.rectangle(clean_img, (x, y), (x + w, y + h), (0, 0, 255), 3)
-
-    # Processed OpenCV Image ko wapas Bytes/PNG format me convert karna
-    is_success, buffer = cv2.imencode(".png", clean_img)
-    if is_success:
-        return buffer.tobytes()
-    return image_bytes
-
-
-def fix_presentation(ppt_path):
-    print("\n" + "="*40)
-    print("      PPT IMAGE FIXER TOOL")
-    print("="*40)
-    print("1. Clean Images (Boxes & Markings bilkul hata do)")
-    print("2. Fix Boxes (Terhe-medhe dabbo ko Perfect Box banao)")
-    choice = input("\nApna option chuniye (1 ya 2): ").strip()
-    
-    if choice not in ['1', '2']:
-        print("Galat option! Script band ho rahi hai.")
-        return
-
-    print(f"\n[+] Loading Presentation: {ppt_path} ...")
-    prs = Presentation(ppt_path)
-    total_slides = len(prs.slides)
-    print(f"[+] Total Slides Found: {total_slides}")
-    print("[+] Processing start ho rahi hai...\n")
-
-    for idx, slide in enumerate(prs.slides, start=1):
-        # Real-time Terminal Progress Output
-        print(f"Processing Slide {idx}/{total_slides}...", end="\r", flush=True)
-
-        for shape in slide.shapes:
-            if shape.has_image:
-                try:
-                    image_stream = shape.image.blob
-                    # Image process karna selected option ke hisab se
-                    fixed_bytes = process_image(image_stream, choice)
-                    
-                    # Old image ko new processed image se replace karna
-                    image_bytes_io = io.BytesIO(fixed_bytes)
-                    shape.image.blob = image_bytes_io.getvalue()
-                except Exception as e:
-                    pass
-
-        # Safe Memory Management: Har 50 slides baad RAM clear karna
-        if idx % 50 == 0:
-            gc.collect()
-
-    # Smart Output Name Generation
-    dir_name, file_name = os.path.split(ppt_path)
-    name, ext = os.path.splitext(file_name)
-    output_path = os.path.join(dir_name, f"{name}_fixed{ext}")
-
-    print(f"\n\n[+] Saving output file to: {output_path}")
-    prs.save(output_path)
-    print(" SUCCESS! Aapki PPT successfully fix ho gayi hai.")
-
-
-if __name__ == "__main__":
-    ppt_file_input = input("Apni PPT File ka Path ya Naam daalein (e.g., presentation.pptx): ").strip('"')
-    if os.path.exists(ppt_file_input):
-        fix_presentation(ppt_file_input)
+    if mode_choice == "1":
+        # Clean Image Option: Minor noise smooth out karna
+        processed_img = img.filter(ImageFilter.MEDIAN_FILTER(size=3))
+    elif mode_choice == "2":
+        # Fix Option: Bounding Box Overlay
+        processed_img = img.copy()
+        draw = ImageDraw.Draw(processed_img)
+        w, h = processed_img.size
+        # Draw a sharp clean box near boundaries
+        draw.rectangle([int(w*0.1), int(h*0.1), int(w*0.9), int(h*0.9)], outline="red", width=4)
     else:
-        print("File nahi mili! Kripya sahi path check karein.")
+        processed_img = img
+
+    output = io.BytesIO()
+    processed_img.save(output, format="PNG")
+    return output.getvalue()
+
+st.title("PPT Image Fixer Tool")
+st.write("Apni PPT Upload Karein aur Options Select Karein.")
+
+option = st.radio("Konsa action perform karna hai?", ["1. Clean Image", "2. Fix & Square Boxes"])
+uploaded_file = st.file_uploader("Choose PPTX File", type=["pptx"])
+
+if uploaded_file is not None:
+    if st.button("Process PPT"):
+        prs = Presentation(uploaded_file)
+        total_slides = len(prs.slides)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        for idx, slide in enumerate(prs.slides, start=1):
+            status_text.text(f"Processing Slide {idx}/{total_slides}...")
+            for shape in slide.shapes:
+                if shape.has_image:
+                    try:
+                        image_bytes = shape.image.blob
+                        fixed_bytes = process_image(image_bytes, option[0])
+                        shape.image.blob = fixed_bytes
+                    except Exception:
+                        pass
+            
+            progress_bar.progress(idx / total_slides)
+            if idx % 50 == 0:
+                gc.collect()
+
+        output_stream = io.BytesIO()
+        prs.save(output_stream)
+        output_stream.seek(0)
+        
+        st.success("Processing Complete!")
+        st.download_button(
+            label="Download Fixed PPT",
+            data=output_stream,
+            file_name="fixed_presentation.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
