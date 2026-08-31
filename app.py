@@ -1,5 +1,4 @@
 import os
-# Server OS Limit Crash (inotify limit error) fix karne ke liye
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 
 import streamlit as st
@@ -7,7 +6,7 @@ import cv2
 import numpy as np
 from pptx import Presentation
 import io
-import gc  # Memory cleanup ke liye module
+import gc
 
 def fix_drawn_box_in_image(image_bytes):
     try:
@@ -17,53 +16,60 @@ def fix_drawn_box_in_image(image_bytes):
         if img is None:
             return image_bytes, False
 
-        h, w = img.shape[:2]
-        max_dim = 800
-        scale = 1.0
-        if max(h, w) > max_dim:
-            scale = max_dim / float(max(h, w))
-            small_img = cv2.resize(img, (int(w * scale), int(h * scale)))
-        else:
-            small_img = img.copy()
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        gray = cv2.cvtColor(small_img, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 40, 150)
-        
-        kernel = np.ones((3, 3), np.uint8)
-        dilated_edges = cv2.dilate(edges, kernel, iterations=2)
-        
-        contours, _ = cv2.findContours(dilated_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
+        # 1. Color Masking (Green Marker & Dark Black Hand-Strokes)
+        # Green Marker Range
+        lower_green = np.array([30, 40, 40])
+        upper_green = np.array([85, 255, 255])
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+
+        # Dark Black Stroke Range
+        lower_black = np.array([0, 0, 0])
+        upper_black = np.array([180, 255, 40])
+        black_mask = cv2.inRange(hsv, lower_black, upper_black)
+
+        # Combine Both Markers
+        marker_mask = cv2.bitwise_or(green_mask, black_mask)
+
+        # Noise Filter (PPT layout ke baki lines ko ignore karne ke liye)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+        marker_mask = cv2.morphologyEx(marker_mask, cv2.MORPH_OPEN, kernel)
+        marker_mask = cv2.dilate(marker_mask, kernel, iterations=2)
+
+        # 2. Find Marker Contours
+        contours, _ = cv2.findContours(marker_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
         best_rect = None
         max_area = 0
-        mask = np.zeros_like(gray)
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area > 1000 and area < (small_img.shape[0] * small_img.shape[1] * 0.75):
+            # Area limit to isolate hand-drawn shape inside slide
+            if 400 < area < (img.shape[0] * img.shape[1] * 0.35):
                 if area > max_area:
                     max_area = area
                     best_rect = cv2.boundingRect(cnt)
-                    cv2.drawContours(mask, [cnt], -1, 255, thickness=8)
 
         if best_rect is not None:
-            if scale != 1.0:
-                mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
-                x = int(best_rect[0] / scale)
-                y = int(best_rect[1] / scale)
-                bw = int(best_rect[2] / scale)
-                bh = int(best_rect[3] / scale)
-            else:
-                x, y, bw, bh = best_rect
+            x, y, w, h = best_rect
 
-            clean_img = cv2.inpaint(img, mask, inpaintRadius=5, flags=cv2.INPAINT_NS)
-            cv2.rectangle(clean_img, (x, y), (x + bw, y + bh), (0, 255, 0), 4)
-            
+            # 3. Create Specific Mask for Inpainting
+            inpaint_mask = np.zeros_like(gray)
+            cv2.rectangle(inpaint_mask, (x, y), (x + w, y + h), 255, -1)
+            inpaint_mask = cv2.bitwise_and(inpaint_mask, marker_mask)
+            inpaint_mask = cv2.dilate(inpaint_mask, kernel, iterations=3)
+
+            # 4. Erase Tedhi Line (Inpaint Original Background)
+            clean_img = cv2.inpaint(img, inpaint_mask, inpaintRadius=7, flags=cv2.INPAINT_TELEA)
+
+            # 5. Draw Perfect Straight Green Rectangle Box
+            cv2.rectangle(clean_img, (x, y), (x + w, y + h), (0, 255, 0), 4)
+
             _, encoded_img = cv2.imencode('.png', clean_img)
             
-            # Temporary Memory Clear
-            del img, gray, blurred, edges, mask, clean_img
+            del img, hsv, gray, green_mask, black_mask, marker_mask, clean_img
             return encoded_img.tobytes(), True
 
     except Exception:
@@ -75,7 +81,6 @@ def process_ppt(ppt_bytes):
     prs = Presentation(io.BytesIO(ppt_bytes))
     modified = False
 
-    # Slide by Slide Processing Loop
     total_slides = len(prs.slides)
     progress_bar = st.progress(0)
 
@@ -91,20 +96,17 @@ def process_ppt(ppt_bytes):
                     modified = True
                     shape.image._blob = fixed_image_bytes
                 
-                # Image level memory clean
                 del image_bytes
             except Exception:
                 continue
         
-        # 1 Slide Done hone par progress update aur MEMORY CLEANUP
         progress_bar.progress(int((idx + 1) / total_slides * 100))
-        gc.collect()  # Forcefully Server ki RAM Khali karna
+        gc.collect()
 
     out_stream = io.BytesIO()
     prs.save(out_stream)
     out_stream.seek(0)
     
-    # Progress Bar Clear
     progress_bar.empty()
     return out_stream.getvalue(), modified
 
@@ -112,7 +114,7 @@ def process_ppt(ppt_bytes):
 st.set_page_config(page_title="PPT Recce Mark Corrector", layout="centered")
 
 st.title("PPT Recce Mark Corrector")
-st.write("PPT upload karein, tool slide-by-slide process karke straight green boxes fix karega.")
+st.write("PPT upload karein, tool hand-drawn markers erase karke straight green box draw kar dega.")
 
 uploaded_ppt = st.file_uploader("Apni PowerPoint (.pptx) file choose karein", type=["pptx"])
 
