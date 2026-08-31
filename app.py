@@ -1,9 +1,12 @@
+import os
+os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
+
 import streamlit as st
 import cv2
 import numpy as np
 from pptx import Presentation
 import io
-import gc  # Memory cleanup ke liye module
+import gc
 
 def fix_drawn_box_in_image(image_bytes):
     try:
