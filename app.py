@@ -1,4 +1,5 @@
 import os
+# Server OS Limit Crash (inotify limit error) fix karne ke liye
 os.environ["STREAMLIT_SERVER_FILE_WATCHER_TYPE"] = "none"
 
 import streamlit as st
@@ -6,7 +7,7 @@ import cv2
 import numpy as np
 from pptx import Presentation
 import io
-import gc
+import gc  # Memory cleanup ke liye module
 
 def fix_drawn_box_in_image(image_bytes):
     try:
